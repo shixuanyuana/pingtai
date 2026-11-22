@@ -13,6 +13,7 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "platform.db"
 app = FastAPI(title="接口自动化平台", version="0.2.0")
 TOKEN_STORE: dict[int, dict[str, str]] = {}
+TOKEN_TTL_SECONDS = 12 * 60 * 60
 
 MODULE = "直播管理"
 CATEGORIES = {"reservation": "直播预约", "match": "直播列表", "order": "直播订单"}
@@ -40,6 +41,10 @@ def init_db() -> None:
           duration_ms INTEGER NOT NULL, response_status INTEGER, response_body TEXT, error TEXT,
           request_url TEXT NOT NULL DEFAULT '', assertion_results TEXT NOT NULL DEFAULT '[]',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS auth_profiles (
+          environment_id INTEGER PRIMARY KEY, username TEXT NOT NULL, password_hash TEXT NOT NULL,
+          token TEXT NOT NULL DEFAULT '', token_expires_at INTEGER NOT NULL DEFAULT 0,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         """)
         env_cols = {row[1] for row in conn.execute("PRAGMA table_info(environments)")}
         if "variables" not in env_cols:
@@ -148,20 +153,20 @@ def mask_token(token: str) -> str:
     return "******" if len(token) <= 12 else f"{token[:6]}…{token[-6:]}"
 
 
-@app.post("/api/auth/token")
-async def acquire_token(payload: TokenLoginIn) -> dict[str, Any]:
+async def login_with_hash(environment_id: int, username: str, password_hash: str) -> dict[str, Any]:
     with db() as conn:
-        row = conn.execute("SELECT * FROM environments WHERE id=?", (payload.environment_id,)).fetchone()
+        row = conn.execute("SELECT * FROM environments WHERE id=?", (environment_id,)).fetchone()
     if not row:
         raise HTTPException(404, "环境不存在")
     env = decode(row)
     if not env["base_url"].startswith(("http://", "https://")):
         raise HTTPException(422, "请先配置当前环境的 Base URL")
-    password_hash = hashlib.sha256(payload.password.encode()).hexdigest()
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            response = await client.post(env["base_url"].rstrip("/") + "/develop/auth/login",
-                                         json={"username": payload.username.strip(), "password": password_hash})
+            response = await client.post(
+                env["base_url"].rstrip("/") + "/develop/auth/login",
+                json={"username": username, "password": password_hash},
+            )
         response.raise_for_status()
         content = response.json()
         data = content.get("data", content) if isinstance(content, dict) else {}
@@ -172,15 +177,60 @@ async def acquire_token(payload: TokenLoginIn) -> dict[str, Any]:
         raise
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(502, f"获取 Token 失败：{exc}") from exc
-    TOKEN_STORE[payload.environment_id] = {"token": token, "username": payload.username.strip()}
-    return {"ok": True, "token": token, "masked_token": mask_token(token), "username": payload.username.strip()}
+    expires_at = int(time.time()) + TOKEN_TTL_SECONDS
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO auth_profiles(environment_id,username,password_hash,token,token_expires_at,updated_at)
+               VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(environment_id) DO UPDATE SET username=excluded.username,
+               password_hash=excluded.password_hash,token=excluded.token,
+               token_expires_at=excluded.token_expires_at,updated_at=CURRENT_TIMESTAMP""",
+            (environment_id, username, password_hash, token, expires_at),
+        )
+    return {"ok": True, "token": token, "masked_token": mask_token(token),
+            "username": username, "expires_at": expires_at, "auto_refresh": True}
+
+
+@app.post("/api/auth/token")
+async def acquire_token(payload: TokenLoginIn) -> dict[str, Any]:
+    password_hash = hashlib.sha256(payload.password.encode()).hexdigest()
+    return await login_with_hash(payload.environment_id, payload.username.strip(), password_hash)
+
+
+async def ensure_token(environment_id: int, force: bool = False) -> dict[str, Any]:
+    with db() as conn:
+        profile = conn.execute("SELECT * FROM auth_profiles WHERE environment_id=?", (environment_id,)).fetchone()
+    if not profile:
+        raise HTTPException(401, "当前环境尚未保存登录账号，请先在账号与登录页面登录")
+    item = dict(profile)
+    if not force and item["token"] and item["token_expires_at"] > int(time.time()) + 60:
+        return {"ok": True, "token": item["token"], "masked_token": mask_token(item["token"]),
+                "username": item["username"], "expires_at": item["token_expires_at"], "auto_refresh": True}
+    return await login_with_hash(environment_id, item["username"], item["password_hash"])
+
+
+@app.post("/api/auth/token/ensure")
+async def ensure_saved_token(environment_id: int, force: bool = False) -> dict[str, Any]:
+    return await ensure_token(environment_id, force)
 
 
 @app.get("/api/auth/token/status")
 def token_status(environment_id: int) -> dict[str, Any]:
-    current = TOKEN_STORE.get(environment_id)
-    return {"available": bool(current), "masked_token": mask_token(current["token"]) if current else "",
-            "username": current["username"] if current else ""}
+    with db() as conn:
+        row = conn.execute("SELECT * FROM auth_profiles WHERE environment_id=?", (environment_id,)).fetchone()
+    if not row:
+        return {"available": False, "masked_token": "", "username": "", "expires_at": 0, "auto_refresh": False}
+    item = dict(row)
+    available = bool(item["token"] and item["token_expires_at"] > int(time.time()))
+    return {"available": available, "masked_token": mask_token(item["token"]) if available else "",
+            "username": item["username"], "expires_at": item["token_expires_at"], "auto_refresh": True}
+
+
+@app.delete("/api/auth/profile")
+def delete_auth_profile(environment_id: int) -> dict[str, bool]:
+    with db() as conn:
+        conn.execute("DELETE FROM auth_profiles WHERE environment_id=?", (environment_id,))
+    return {"ok": True}
 
 
 @app.get("/api/cases")
@@ -346,7 +396,10 @@ async def run_case(case_id: int, environment_id: int = 1, allow_write: bool = Fa
     case, env = decode(case_row), decode(env_row)
     if case["method"] not in ("GET", "HEAD", "OPTIONS") and not allow_write:
         raise HTTPException(403, "写入类接口必须显式启用 allow_write")
-    token = authorization.removeprefix("Bearer ").strip() or TOKEN_STORE.get(environment_id, {}).get("token", "")
+    token = authorization.removeprefix("Bearer ").strip()
+    managed_token = not bool(token)
+    if managed_token:
+        token = (await ensure_token(environment_id))["token"]
     variables = {**env.get("variables", {}), **({"token": token} if token else {})}
     try:
         if not env["base_url"].startswith(("http://", "https://")): raise ValueError("Base URL 必须以 http:// 或 https:// 开头")
@@ -366,6 +419,12 @@ async def run_case(case_id: int, environment_id: int = 1, allow_write: bool = Fa
             response = await client.request(case["method"], url, headers=headers, params=params,
                 json=body if isinstance(body, (dict, list)) else None,
                 content=body if isinstance(body, str) and body else None)
+            if response.status_code == 401 and managed_token:
+                token = (await ensure_token(environment_id, force=True))["token"]
+                headers["Authorization"] = f"Bearer {token}"
+                response = await client.request(case["method"], url, headers=headers, params=params,
+                    json=body if isinstance(body, (dict, list)) else None,
+                    content=body if isinstance(body, str) and body else None)
             status, response_body = response.status_code, response.text[:100000]
     except Exception as exc: error = str(exc)
     duration = round((time.perf_counter() - started) * 1000)
