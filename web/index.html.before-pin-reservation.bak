@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>接口自动化平台</title>
+  <style>
+    :root{font-family:Inter,"Microsoft YaHei",sans-serif;color:#e7eefc;background:#080d1b}*{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:radial-gradient(900px 520px at 92% -10%,#1f4a77 0,transparent 62%),#080d1b}
+    header{height:76px;padding:0 28px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #273653;background:#09101ed9}
+    .brand{display:flex;align-items:center;gap:12px}.logo{width:40px;height:40px;display:grid;place-items:center;border-radius:12px;font-weight:900;background:linear-gradient(145deg,#0ea5e9,#2563eb)}
+    h1{font-size:21px;margin:0}h2{font-size:17px;margin:0 0 16px}.muted{color:#8fa1bf;font-size:13px}.shell{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 76px)}
+    aside{padding:22px 16px;border-right:1px solid #273653;background:#09101eaa}.module{padding:0 10px 10px;color:#e6f4ff;font-size:14px;font-weight:800}.nav{display:block;width:100%;margin:5px 0;padding:11px 13px;text-align:left;border:0;border-radius:9px;background:transparent;color:#92a7c5;cursor:pointer}.nav:hover{background:#12223b}.nav.active{color:#dff7ff;background:#15375b;border-left:3px solid #44c7f4}.count{float:right;padding:2px 7px;border-radius:10px;background:#243b5b;font-size:11px}
+    main{padding:22px;min-width:0}.topline{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.breadcrumb{font-size:14px;color:#9ab0cc}.breadcrumb strong{color:#fff}.actions{display:flex;gap:8px}
+    button{border:0;border-radius:9px;padding:9px 13px;cursor:pointer;font-weight:700;background:linear-gradient(135deg,#54d5ff,#3594ee);color:#06243d}button.secondary{background:#172742;color:#c9def8;border:1px solid #304866}
+    .grid{display:grid;grid-template-columns:340px 1fr;gap:16px}.card{padding:18px;border:1px solid #253a59;border-radius:15px;background:linear-gradient(145deg,#121c31e8,#0a1120e8)}.wide{grid-column:1/-1}
+    label{display:block;color:#a8bad2;font-size:13px}input,select,textarea{width:100%;margin:6px 0 12px;padding:9px 10px;border:1px solid #2b4162;border-radius:8px;background:#0b1426;color:#e7eefc}textarea{min-height:72px;font-family:Consolas,monospace}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.status{font-size:12px;color:#8fa1bf;margin:8px 0}.ready{color:#70dda0}
+    table{width:100%;border-collapse:collapse}th,td{padding:11px 9px;text-align:left;border-bottom:1px solid #293b55;vertical-align:top}th{color:#8fc8fa;font-size:12px}.tag{display:inline-block;padding:3px 7px;border-radius:12px;background:#123b61;color:#80daf8;font-size:12px}.post{background:#4b2f19;color:#ffbf74}.ok{color:#76e7a3}.bad{color:#ff9fa4}pre{max-width:520px;max-height:150px;overflow:auto;white-space:pre-wrap;font-size:11px;color:#b8cce2}.empty{padding:38px;text-align:center;color:#8295b3;border:1px dashed #304866;border-radius:10px}
+    details{margin:10px 0}summary{cursor:pointer;color:#9fb5d1}.section-title{display:flex;align-items:center;justify-content:space-between}.category-info{color:#8295b3;font-size:12px;margin-top:-10px;margin-bottom:15px}
+    .result-btn{margin-left:6px;background:#172742;color:#c9def8;border:1px solid #426185}.result-btn:disabled{opacity:.4;cursor:not-allowed}
+    .account-only,.create-only{display:none;grid-column:1/-1;max-width:820px}.account-only.active,.create-only.active{display:block}.api-only.hidden{display:none}.account-note{padding:12px;margin:12px 0;border:1px solid #294567;border-radius:9px;background:#0c1b30;color:#9db3d0;font-size:12px}.token-actions{display:flex;gap:8px;flex-wrap:wrap}.danger{background:#3b1d28!important;color:#ffb2bf!important;border:1px solid #6d3040!important}
+    .modal{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:24px;background:#020713c7}.modal.open{display:flex}.modal-card{width:min(900px,96vw);max-height:90vh;overflow:auto;padding:22px;border:1px solid #375479;border-radius:16px;background:#0b1426;box-shadow:0 24px 80px #000a}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.modal-head h2{margin:0}.close{font-size:22px;padding:4px 10px;background:transparent;color:#b9cbe1;border:1px solid #304866}.result-meta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}.meta{padding:10px;border-radius:9px;background:#111f35}.meta span{display:block;color:#8499b7;font-size:11px;margin-bottom:5px}.result-block{margin-top:14px}.result-block h3{font-size:13px;color:#9fc8ec;margin:0 0 7px}.response{max-width:none;max-height:390px;min-height:100px;padding:14px;border:1px solid #273e5e;border-radius:9px;background:#050c17;color:#c7daee}.url{word-break:break-all;color:#8fd9f6;font-family:Consolas,monospace;font-size:12px}
+    .parameter-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}.parameter-help{margin:4px 0 14px;color:#8fa1bf;font-size:12px}.request-detail summary{color:#9fc8ec;font-weight:700;cursor:pointer}.request-detail pre{max-width:none;max-height:260px;padding:12px;border:1px solid #273e5e;border-radius:9px;background:#050c17;color:#c7daee}
+    @media(max-width:900px){.shell{grid-template-columns:1fr}aside{display:flex;gap:5px;overflow:auto;border-right:0}.module{display:none}.nav{white-space:nowrap}.grid{grid-template-columns:1fr}.card{grid-column:auto}}
+  </style>
+</head>
+<body>
+<header><div class="brand"><div class="logo">QA</div><div><h1>接口自动化平台</h1><div class="muted">赛事云导播 · 用例管理与执行</div></div></div><span id="envCount" class="tag">加载中</span></header>
+<div class="shell">
+  <aside>
+    <div class="module">账号设置</div>
+    <button id="accountNav" class="nav" onclick="showAccountPage()">账号与登录</button>
+    <div class="module">用例管理</div>
+    <button id="createNav" class="nav" onclick="showCreatePage()">新增接口用例</button>
+    <div class="module">▾ 直播管理</div>
+    <button class="nav category-nav active" data-group="reservation" data-category="直播预约">直播预约 <span id="count-reservation" class="count">0</span></button>
+    <button class="nav category-nav" data-group="match" data-category="直播列表">直播列表 <span id="count-match" class="count">0</span></button>
+    <button class="nav category-nav" data-group="order" data-category="直播订单">直播订单 <span id="count-order" class="count">0</span></button>
+  </aside>
+  <main>
+    <div id="apiTopline" class="topline api-only"><div class="breadcrumb">直播管理 / <strong id="currentCategory">直播预约</strong></div><div class="actions"><button class="secondary" onclick="syncCurrent()">同步当前目录接口</button><button onclick="runSuite()">运行当前查询套件</button></div></div>
+    <div class="grid">
+      <section id="accountCard" class="card account-only">
+        <h2>环境与账号登录</h2>
+        <div class="account-note">登录资料保存在本机数据库中。密码只保存 SHA-256 摘要，不保存明文；Token 有效期按 12 小时管理，到期后会自动重新登录刷新。</div>
+        <label>当前环境<select id="environmentId" onchange="environmentChanged()"></select></label>
+        <div class="row"><label>环境名称<input id="envName"></label><label>类型<select id="envKind"><option value="test">测试</option><option value="prod">真实</option></select></label></div>
+        <label>Base URL<input id="baseUrl" placeholder="https://test.example.com"></label>
+        <details><summary>环境变量与公共请求头</summary><label>公共请求头 JSON<textarea id="envHeaders">{}</textarea></label><label>环境变量 JSON<textarea id="envVariables">{}</textarea></label></details>
+        <button class="secondary" onclick="saveEnv()">保存环境</button>
+        <hr style="border:0;border-top:1px solid #293b55;margin:18px 0">
+        <div class="row"><label>账号<input id="loginUsername" autocomplete="username"></label><label>密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="首次保存或更换密码时填写"></label></div>
+        <label>当前 Token<input id="savedToken" readonly placeholder="尚未获取"></label>
+        <div id="tokenStatus" class="status">尚未保存登录资料</div>
+        <div class="token-actions"><button onclick="acquireToken()">保存账号并登录</button><button class="secondary" onclick="refreshToken()">立即刷新 Token</button><button class="danger" onclick="clearLogin()">清除登录资料</button></div>
+      </section>
+      <section id="createCard" class="card create-only">
+        <h2>新增接口用例</h2>
+        <div class="account-note">创建后，用例会保存到所选业务目录；可在左侧“直播预约 / 直播列表 / 直播订单”中查看和执行。</div>
+        <label>归属目录<select id="caseCategory"><option>直播预约</option><option>直播列表</option><option>直播订单</option></select></label>
+        <label>用例名称<input id="caseName" placeholder="例如：预约退款"></label>
+        <div class="row"><label>请求方法<select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select></label><label>接口路径<input id="path" placeholder="/develop/..."></label></div>
+        <label>请求参数 JSON<textarea id="params">{}</textarea></label><label>请求体 JSON 或文本<textarea id="body"></textarea></label>
+        <label>断言 JSON<textarea id="assertions">[{"type":"status","expected":200}]</textarea></label><button onclick="saveCase()">保存到所选目录</button>
+      </section>
+      <section class="card wide api-only">
+        <div class="section-title"><h2 id="caseHeading">直播预约接口</h2><span id="caseTotal" class="tag">0 个接口</span></div>
+        <div class="category-info">这里只展示当前目录下的接口用例；点击左侧目录可切换。</div><div id="cases"></div>
+      </section>
+      <section class="card wide api-only"><h2>最近运行结果</h2><div id="runs"></div></section>
+    </div>
+  </main>
+</div>
+<div id="resultModal" class="modal" onclick="if(event.target===this)closeResult()">
+  <div class="modal-card">
+    <div class="modal-head"><h2>接口执行结果</h2><button class="close" onclick="closeResult()">×</button></div>
+    <div id="resultTitle" class="muted"></div>
+    <div class="result-meta">
+      <div class="meta"><span>执行结论</span><strong id="resultStatus">-</strong></div>
+      <div class="meta"><span>HTTP 状态码</span><strong id="resultHttp">-</strong></div>
+      <div class="meta"><span>响应耗时</span><strong id="resultDuration">-</strong></div>
+      <div class="meta"><span>执行时间</span><strong id="resultTime">-</strong></div>
+    </div>
+    <div class="result-block"><h3>请求地址</h3><div id="resultUrl" class="url">-</div></div>
+    <div id="resultErrorBlock" class="result-block"><h3>错误信息</h3><pre id="resultError" class="response"></pre></div>
+    <div class="result-block"><h3>断言检查</h3><div id="resultAssertions"></div></div>
+    <details class="result-block request-detail" open><summary>实际发送的请求参数</summary>
+      <div class="result-block"><h3>请求头（敏感字段已隐藏）</h3><pre id="resultHeaders"></pre></div>
+      <div class="result-block"><h3>查询参数</h3><pre id="resultParams"></pre></div>
+      <div class="result-block"><h3>请求体</h3><pre id="resultRequestBody"></pre></div>
+    </details>
+    <div class="result-block"><div class="section-title"><h3>原始响应</h3><button class="secondary" onclick="copyResponse()">复制响应</button></div><pre id="resultBody" class="response"></pre></div>
+  </div>
+</div>
+<div id="parameterModal" class="modal" onclick="if(event.target===this)closeParameters()">
+  <div class="modal-card" style="width:min(720px,96vw)">
+    <div class="modal-head"><h2>填写运行参数</h2><button class="close" onclick="closeParameters()">×</button></div>
+    <div id="parameterTitle" class="muted"></div>
+    <p class="parameter-help">参数会保存到当前环境，下一次执行相同或其他使用该变量的接口时会自动带入。创建预约订单会默认回显已保存的场地和凭证码，开始时间为当前时间，结束时间自动加一小时。</p>
+    <div id="parameterFields" class="parameter-fields"></div>
+    <div id="parameterEmpty" class="empty" style="display:none">该接口没有可填写的环境变量。</div>
+    <div class="actions" style="margin-top:18px"><button class="secondary" onclick="saveParameters(false)">仅保存参数</button><button onclick="saveParameters(true)">保存并执行</button></div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);let environments=[],allCases=[],allRuns=[],currentGroup='reservation',currentCategory='直播预约',globalToken='';
+const groupCategory={reservation:'直播预约',match:'直播列表',order:'直播订单'};
+function parseJson(id){try{return JSON.parse($(id).value||'{}')}catch{alert(id+' 不是合法 JSON');throw new Error('JSON 格式错误')}}
+async function api(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw new Error(d.detail||'请求失败');return d}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function hideStandalonePages(){$('accountCard').classList.remove('active');$('createCard').classList.remove('active');$('accountNav').classList.remove('active');$('createNav').classList.remove('active')}
+function showApiPage(){document.querySelectorAll('.api-only').forEach(x=>x.classList.remove('hidden'));hideStandalonePages()}
+function showAccountPage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('accountNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('createCard').classList.remove('active');$('accountCard').classList.add('active')}
+function showCreatePage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('createNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('accountCard').classList.remove('active');$('createCard').classList.add('active');$('caseCategory').value=currentCategory}
+document.querySelectorAll('.category-nav').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));b.classList.add('active');showApiPage();b.classList.add('active');currentGroup=b.dataset.group;currentCategory=b.dataset.category;$('currentCategory').textContent=currentCategory;$('caseCategory').value=currentCategory;renderCases()});
+async function saveEnv(){const id=$('environmentId').value,p={name:$('envName').value,base_url:$('baseUrl').value,kind:$('envKind').value,headers:parseJson('envHeaders'),variables:parseJson('envVariables')};await api('/api/environments/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});await load();alert('环境已保存')}
+function showTokenState(d){globalToken=d.token||'';$('savedToken').value=d.masked_token||'';$('loginUsername').value=d.username||'';$('tokenStatus').className='status'+(d.available===false?'':' ready');if(d.auto_refresh){const expiry=d.expires_at?new Date(d.expires_at*1000).toLocaleString():'待自动刷新';$('tokenStatus').textContent=(d.available===false?'Token 已过期，将自动刷新':'Token 可用')+' · '+d.username+' · 有效至 '+expiry}else{$('tokenStatus').textContent='尚未保存登录资料'}}
+async function acquireToken(){const username=$('loginUsername').value.trim(),password=$('loginPassword').value;if(!username||!password){alert('首次保存登录资料时，请填写账号和密码');return}try{const d=await api('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({environment_id:Number($('environmentId').value),username,password})});$('loginPassword').value='';showTokenState(d);alert('登录资料已保存，Token 将在 12 小时后自动刷新')}catch(e){alert(e.message)}}
+async function refreshToken(){try{const d=await api('/api/auth/token/ensure?environment_id='+$('environmentId').value+'&force=true',{method:'POST'});showTokenState(d);alert('Token 已刷新')}catch(e){alert(e.message)}}
+async function clearLogin(){if(!confirm('确定清除当前环境保存的账号、密码摘要和 Token 吗？'))return;await api('/api/auth/profile?environment_id='+$('environmentId').value,{method:'DELETE'});globalToken='';$('loginUsername').value='';$('loginPassword').value='';$('savedToken').value='';$('tokenStatus').className='status';$('tokenStatus').textContent='尚未保存登录资料'}
+async function environmentChanged(){const e=environments.find(x=>String(x.id)===$('environmentId').value);if(!e)return;$('envName').value=e.name;$('baseUrl').value=e.base_url;$('envKind').value=e.kind;$('envHeaders').value=JSON.stringify(e.headers||{},null,2);$('envVariables').value=JSON.stringify(e.variables||{},null,2);globalToken='';const s=await api('/api/auth/token/status?environment_id='+e.id);showTokenState(s);if(s.auto_refresh){try{const d=await api('/api/auth/token/ensure?environment_id='+e.id,{method:'POST'});showTokenState(d)}catch(err){$('tokenStatus').className='status bad';$('tokenStatus').textContent='自动刷新失败：'+err.message}}}
+async function saveCase(){await api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('caseName').value,module:'直播管理',category:$('caseCategory').value,method:$('method').value,path:$('path').value,params:parseJson('params'),body:$('body').value,assertions:parseJson('assertions')})});currentCategory=$('caseCategory').value;currentGroup=Object.keys(groupCategory).find(k=>groupCategory[k]===currentCategory);$('caseName').value='';$('path').value='';$('params').value='{}';$('body').value='';await load();document.querySelector('.category-nav[data-group="'+currentGroup+'"]').click();alert('用例已保存到“'+currentCategory+'”目录')}
+async function syncCurrent(){await api('/api/templates/'+currentGroup,{method:'POST'});await load();alert('“'+currentCategory+'”接口已同步')}
+async function runSuite(){try{const d=await api('/api/suites/'+currentGroup+'/run?environment_id='+$('environmentId').value,{method:'POST'});alert(`${currentCategory}查询套件：${d.passed}/${d.total} 通过`);await load()}catch(e){alert(e.message)}}
+async function runCase(id,method,name){const write=!['GET','HEAD','OPTIONS'].includes(method);if(write&&!confirm('确定执行“'+name+'”？该接口可能写入真实业务数据。'))return;try{const d=await api('/api/cases/'+id+'/run?environment_id='+$('environmentId').value+(write?'&allow_write=true':''),{method:'POST'});await load();openResult(d.id)}catch(e){alert(e.message)}}
+let parameterCase=null;
+function findPlaceholders(value){const text=typeof value==='string'?value:JSON.stringify(value);return [...new Set([...text.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)].map(x=>x[1]))]}
+function reservationOrderDefaults(){const start=new Date();start.setSeconds(0,0);const end=new Date(start.getTime()+60*60*1000);const format=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:00`;return {start_time:format(start),end_time:format(end)}}
+function parameterDefaults(c,variables){const values={...variables};if(c.method==='POST'&&c.path==='/develop/reservation-orders'){const time=reservationOrderDefaults();values.store_id=variables.store_id??301;values.start_time=time.start_time;values.end_time=time.end_time}return values}
+function openParameters(caseId){const c=allCases.find(x=>x.id===caseId);const env=environments.find(x=>String(x.id)===$('environmentId').value);if(!c||!env)return;parameterCase=c;const keys=findPlaceholders({path:c.path,params:c.params,body:c.body});const values=parameterDefaults(c,env.variables||{});$('parameterTitle').textContent=c.name+' · '+c.method+' '+c.path;$('parameterFields').innerHTML=keys.map(key=>`<label>${esc(key)}<input data-variable="${esc(key)}" value="${esc(values[key]??'')}" placeholder="请输入 ${esc(key)}"></label>`).join('');$('parameterEmpty').style.display=keys.length?'none':'block';$('parameterModal').classList.add('open')}
+function closeParameters(){$('parameterModal').classList.remove('open');parameterCase=null}
+function typedValue(value){const v=value.trim();if(v==='true')return true;if(v==='false')return false;if(/^-?\d+(\.\d+)?$/.test(v))return Number(v);return value}
+async function saveParameters(execute){if(!parameterCase)return;const env=environments.find(x=>String(x.id)===$('environmentId').value);const variables={...(env.variables||{})};document.querySelectorAll('#parameterFields [data-variable]').forEach(input=>{if(input.value.trim())variables[input.dataset.variable]=typedValue(input.value);else delete variables[input.dataset.variable]});const payload={name:env.name,base_url:env.base_url,kind:env.kind,headers:env.headers||{},variables};try{await api('/api/environments/'+env.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const c=parameterCase;closeParameters();await load();if(execute)await runCase(c.id,c.method,c.name);else alert('运行参数已保存到当前环境')}catch(e){alert(e.message)}}
+function renderCases(){const list=allCases.filter(c=>c.module==='直播管理'&&c.category===currentCategory);$('currentCategory').textContent=currentCategory;$('caseHeading').textContent=currentCategory+'接口';$('caseTotal').textContent=list.length+' 个接口';$('caseCategory').value=currentCategory;const latest=new Map();allRuns.forEach(r=>{if(!latest.has(r.case_id))latest.set(r.case_id,r)});$('cases').innerHTML=list.length?'<table><tr><th>接口名称</th><th>请求</th><th>断言</th><th>操作</th></tr>'+list.map(c=>{const r=latest.get(c.id);return `<tr><td>${esc(c.name)}</td><td><span class="tag ${c.method==='GET'?'':'post'}">${esc(c.method)}</span> ${esc(c.path)}</td><td>${c.assertions.length} 条</td><td><button class="secondary" onclick="openParameters(${c.id})">填写参数</button><button onclick="runCase(${c.id},'${esc(c.method)}','${esc(c.name)}')">执行</button><button class="result-btn" ${r?`onclick="openResult(${r.id})"`:'disabled'}>${r?'查看结果':'暂无结果'}</button></td></tr>`}).join('')+'</table>':'<div class="empty">当前目录还没有接口。点击“同步当前目录接口”，或在上方新增用例。</div>'}
+function renderRuns(runs){$('runs').innerHTML=runs.length?'<table><tr><th>时间</th><th>目录</th><th>用例</th><th>结果</th><th>状态码</th><th>操作</th></tr>'+runs.map(r=>`<tr><td>${esc(r.created_at)}</td><td>${esc(r.category||'-')}</td><td>${esc(r.case_name)}</td><td class="${r.status==='passed'?'ok':'bad'}">${r.status==='passed'?'通过':'失败'}</td><td>${r.response_status||'-'}</td><td><button class="result-btn" onclick="openResult(${r.id})">查看结果</button></td></tr>`).join('')+'</table>':'<div class="empty">暂无运行记录</div>'}
+function prettyBody(value){if(!value)return '（响应体为空）';try{return JSON.stringify(JSON.parse(value),null,2)}catch{return value}}
+function assertionText(a){if(a.type==='status')return `状态码等于 ${a.expected}`;if(a.type==='contains')return `响应包含 ${a.expected}`;if(a.type==='json_code')return `JSON code 等于 ${a.expected}`;return a.type||'未知断言'}
+function openResult(id){const r=allRuns.find(x=>x.id===id);if(!r){alert('未找到这次执行记录');return}$('resultTitle').textContent=(r.category||'未分类')+' / '+r.case_name+' · '+(r.case_method||'')+' '+(r.case_path||'');$('resultStatus').textContent=r.status==='passed'?'✓ 通过':'✕ 失败';$('resultStatus').className=r.status==='passed'?'ok':'bad';$('resultHttp').textContent=r.response_status||'未收到响应';$('resultDuration').textContent=r.duration_ms+' ms';$('resultTime').textContent=r.created_at;$('resultUrl').textContent=r.request_url||'旧记录未保存请求地址';$('resultError').textContent=r.error||'';$('resultErrorBlock').style.display=r.error?'block':'none';let checks=[];try{checks=JSON.parse(r.assertion_results||'[]')}catch{}$('resultAssertions').innerHTML=checks.length?checks.map(a=>`<div class="${a.passed?'ok':'bad'}">${a.passed?'✓':'✕'} ${esc(assertionText(a))}</div>`).join(''):'<span class="muted">旧记录没有保存断言明细</span>';$('resultHeaders').textContent=prettyBody(r.request_headers)||'旧记录未保存请求头';$('resultParams').textContent=prettyBody(r.request_params)||'旧记录未保存查询参数';$('resultRequestBody').textContent=prettyBody(r.request_body)||'旧记录未保存请求体';$('resultBody').textContent=prettyBody(r.response_body);$('resultModal').classList.add('open')}
+function closeResult(){$('resultModal').classList.remove('open')}
+async function copyResponse(){try{await navigator.clipboard.writeText($('resultBody').textContent);alert('响应内容已复制')}catch{alert('复制失败，请手动选择响应内容')}}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeResult()});
+async function load(){const [envs,cases,runs]=await Promise.all([api('/api/environments'),api('/api/cases'),api('/api/runs')]);environments=envs;allCases=cases;allRuns=runs;const old=$('environmentId').value;$('environmentId').replaceChildren(...envs.map(e=>new Option((e.kind==='prod'?'真实':'测试')+' · '+e.name,e.id)));if(envs.some(e=>String(e.id)===old))$('environmentId').value=old;else{const test=envs.find(e=>e.kind==='test');if(test)$('environmentId').value=test.id}await environmentChanged();$('envCount').textContent=envs.length+' 个环境';Object.entries(groupCategory).forEach(([g,c])=>$('count-'+g).textContent=cases.filter(x=>x.module==='直播管理'&&x.category===c).length);renderCases();renderRuns(runs)}
+load().catch(e=>alert(e.message));
+</script>
+</body></html>

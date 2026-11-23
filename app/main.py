@@ -1,5 +1,5 @@
 from pathlib import Path
-import hashlib, json, re, sqlite3, time
+import hashlib, json, re, sqlite3, time, uuid
 from typing import Any
 
 import httpx
@@ -14,6 +14,8 @@ DB_PATH = DATA_DIR / "platform.db"
 app = FastAPI(title="接口自动化平台", version="0.2.0")
 TOKEN_STORE: dict[int, dict[str, str]] = {}
 TOKEN_TTL_SECONDS = 12 * 60 * 60
+SCENARIO_TTL_SECONDS = 30 * 60
+SCENARIO_SESSIONS: dict[str, dict[str, Any]] = {}
 
 MODULE = "直播管理"
 CATEGORIES = {"reservation": "直播预约", "match": "直播列表", "order": "直播订单"}
@@ -39,7 +41,9 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER NOT NULL, status TEXT NOT NULL,
           duration_ms INTEGER NOT NULL, response_status INTEGER, response_body TEXT, error TEXT,
-          request_url TEXT NOT NULL DEFAULT '', assertion_results TEXT NOT NULL DEFAULT '[]',
+          request_url TEXT NOT NULL DEFAULT '', request_headers TEXT NOT NULL DEFAULT '{}',
+          request_params TEXT NOT NULL DEFAULT '{}', request_body TEXT NOT NULL DEFAULT '',
+          assertion_results TEXT NOT NULL DEFAULT '[]',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS auth_profiles (
           environment_id INTEGER PRIMARY KEY, username TEXT NOT NULL, password_hash TEXT NOT NULL,
@@ -60,6 +64,12 @@ def init_db() -> None:
         run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
         if "request_url" not in run_cols:
             conn.execute("ALTER TABLE runs ADD COLUMN request_url TEXT NOT NULL DEFAULT ''")
+        if "request_headers" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN request_headers TEXT NOT NULL DEFAULT '{}'")
+        if "request_params" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN request_params TEXT NOT NULL DEFAULT '{}'")
+        if "request_body" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN request_body TEXT NOT NULL DEFAULT ''")
         if "assertion_results" not in run_cols:
             conn.execute("ALTER TABLE runs ADD COLUMN assertion_results TEXT NOT NULL DEFAULT '[]'")
         conn.execute("UPDATE cases SET category='直播列表' WHERE name LIKE '直播列表-%'")
@@ -99,6 +109,18 @@ class CaseIn(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     body: str = ""
     assertions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ScenarioRunIn(BaseModel):
+    environment_id: int
+    variables: dict[str, Any] = Field(default_factory=dict)
+    allow_write: bool = False
+
+
+class ScenarioContinueIn(BaseModel):
+    session_id: str
+    variables: dict[str, Any] = Field(default_factory=dict)
+    allow_write: bool = False
 
 
 def decode(row: sqlite3.Row) -> dict[str, Any]:
@@ -266,7 +288,7 @@ RESERVATION_TEMPLATES = [
     t("创建预约订单", "POST", "/develop/reservation-orders", body={
         "store_id": "{{store_id}}", "start_time": "{{start_time}}", "end_time": "{{end_time}}",
         "payment_type": "voucher", "voucher_code": "{{voucher_code}}", "is_clound": 1,
-        "is_overseas": 0, "auto_device_config": 1, "auto_server_config": 1, "is_resolution": 0,
+        "is_overseas": False, "auto_device_config": 1, "auto_server_config": 1, "is_resolution": 0,
         "is_multiple": 0, "is_data_analysis": 0, "auto_clip_enable": 0, "is_director": 1, "obs_record_enable": 0}),
     t("查询预约列表", "GET", "/develop/reservations", {"page_num": 1, "page_size": 20}),
     t("查询预约详情", "GET", "/develop/reservations/{{reservation_id}}"),
@@ -386,6 +408,20 @@ def redact(value: str, secrets: list[str]) -> str:
     return value
 
 
+def request_log_value(value: Any, secrets: list[str]) -> str:
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False, indent=2)
+    return redact(str(value or ""), secrets)
+
+
+def request_log_headers(headers: dict[str, Any]) -> str:
+    safe = dict(headers)
+    for key in list(safe):
+        if key.lower() in ("authorization", "cookie", "x-api-key"):
+            safe[key] = "[REDACTED]"
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
 @app.post("/api/cases/{case_id}/run")
 async def run_case(case_id: int, environment_id: int = 1, allow_write: bool = False,
                    authorization: str = Header(default="")) -> dict[str, Any]:
@@ -432,10 +468,14 @@ async def run_case(case_id: int, environment_id: int = 1, allow_write: bool = Fa
     passed = not error and 200 <= status < 300 and all(item["passed"] for item in checks)
     result_status = "passed" if passed else "failed"
     safe_body = redact(response_body, [token, str(variables.get("voucher_code", ""))])
+    secrets = [token, str(variables.get("voucher_code", ""))]
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO runs(case_id,status,duration_ms,response_status,response_body,error,request_url,assertion_results) VALUES(?,?,?,?,?,?,?,?)",
-            (case_id, result_status, duration, status, safe_body, error, url, json.dumps(checks, ensure_ascii=False)),
+            """INSERT INTO runs(case_id,status,duration_ms,response_status,response_body,error,request_url,
+               request_headers,request_params,request_body,assertion_results) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (case_id, result_status, duration, status, safe_body, error, url,
+             request_log_headers(headers), request_log_value(params, secrets),
+             request_log_value(body, secrets), json.dumps(checks, ensure_ascii=False)),
         )
     return {"id": cur.lastrowid, "status": result_status, "duration_ms": duration,
             "response_status": status, "response_body": safe_body, "error": error,
@@ -469,3 +509,264 @@ async def run_suite(group: str, environment_id: int = 1, authorization: str = He
 
 async def run_reservation_suite(environment_id: int = 1, authorization: str = ""):
     return await run_suite("reservation", environment_id, authorization)
+
+
+CREATE_LIVE_FIELDS = [
+    {"name": "store_id", "label": "场地 ID", "required": False, "default": 300, "readonly": True, "hint": "此场景固定使用 300"},
+    {"name": "start_time", "label": "预约开始时间", "required": True, "hint": "格式：YYYY-MM-DD HH:mm:ss"},
+    {"name": "end_time", "label": "预约结束时间", "required": True, "hint": "必须晚于开始时间"},
+    {"name": "voucher_code", "label": "凭证码", "required": False, "default": "VP2026110985535A6DG5ZCFF7FX", "hint": "当前场景按 voucher 凭证支付创建订单"},
+    {"name": "matches_name", "label": "直播名称", "required": False, "default": "", "hint": "可留空，系统会自动生成"},
+    {"name": "device_id", "label": "主相机 ID", "required": False, "hint": "可选；已配置时会随创建直播请求发送"},
+]
+
+CREATE_RECORDING_FIELDS = [
+    {"name": "recording_name", "label": "录像名称", "required": True, "hint": "创建录像所需名称"},
+    {"name": "store_id", "label": "场地 ID", "required": True, "default": 30, "hint": "创建录像所需场地 ID"},
+    {"name": "start_time", "label": "录像开始时间", "required": True, "hint": "格式：YYYY-MM-DD HH:mm:ss"},
+    {"name": "end_time", "label": "录像结束时间", "required": True, "hint": "必须晚于开始时间"},
+    {"name": "voucher_code", "label": "凭证码", "required": True, "default": "VP2026110985535A6DG5ZCFF7FX", "hint": "payment_type=voucher 时必填"},
+]
+
+
+def read_json_path(value: Any, path: str) -> Any:
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value: return None
+        value = value[key]
+    return value
+
+
+def scenario_missing(variables: dict[str, Any], fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [field for field in fields if field["required"] and variables.get(field["name"]) in (None, "")]
+
+
+def scenario_result(session: dict[str, Any], state: str, *, missing: list[dict[str, Any]] | None = None,
+                    message: str = "") -> dict[str, Any]:
+    public_steps = [{key: value for key, value in step.items() if key != "json"} for step in session["steps"]]
+    return {"session_id": session["id"], "state": state, "message": message,
+            "missing": missing or [], "steps": public_steps,
+            "variables": {key: value for key, value in session["variables"].items() if key not in {"token", "voucher_code"}}}
+
+
+async def scenario_request(client: httpx.AsyncClient, method: str, url: str, headers: dict[str, str],
+                           *, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        response = await client.request(method, url, headers=headers, params=params, json=body)
+        raw = response.text[:100000]
+        try: parsed = response.json()
+        except ValueError: parsed = None
+        code = parsed.get("code") if isinstance(parsed, dict) else None
+        passed = 200 <= response.status_code < 300 and code in (None, 200)
+        return {"status": "passed" if passed else "failed", "http_status": response.status_code,
+                "response": redact(raw, [headers.get("Authorization", "")]), "json": parsed,
+                "duration_ms": round((time.perf_counter() - started) * 1000)}
+    except httpx.HTTPError as exc:
+        return {"status": "failed", "http_status": 0, "response": "", "json": None,
+                "error": str(exc), "duration_ms": round((time.perf_counter() - started) * 1000)}
+
+
+async def execute_create_live_scenario(session: dict[str, Any]) -> dict[str, Any]:
+    variables, env = session["variables"], session["environment"]
+    missing = scenario_missing(variables, CREATE_LIVE_FIELDS)
+    if missing:
+        return scenario_result(session, "needs_input", missing=missing, message="请先填写场景必填参数")
+    token = (await ensure_token(session["environment_id"]))["token"]
+    headers = {**env.get("headers", {}), "Authorization": f"Bearer {token}"}
+    base = env["base_url"].rstrip("/")
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        if session["next_step"] == 0:
+            result = await scenario_request(client, "POST", base + "/develop/reservation-orders", headers, body={
+                "store_id": variables["store_id"], "start_time": variables["start_time"], "end_time": variables["end_time"],
+                "payment_type": "voucher", "voucher_code": variables["voucher_code"], "is_clound": 1,
+                "auto_device_config": 1, "auto_server_config": 1, "is_resolution": 0, "is_multiple": 0,
+                "is_data_analysis": 0, "is_director": 1, "obs_record_enable": 0,
+            })
+            result.update(name="创建预约订单", method="POST", path="/develop/reservation-orders")
+            session["steps"].append(result)
+            if result["status"] != "passed": return scenario_result(session, "failed", message="创建预约订单失败")
+            variables["auth_code"] = read_json_path(result["json"], "data.auth_code")
+            session["next_step"] = 1
+            if not variables["auth_code"]:
+                return scenario_result(session, "needs_input", missing=[{"name": "auth_code", "label": "预约授权码", "required": True,
+                    "hint": "订单响应未返回授权码。完成支付后，从预约详情或授权码查询接口获取后填入。"}], message="预约订单已创建，等待授权码")
+        if session["next_step"] == 1:
+            if not variables.get("matches_name"):
+                variables["matches_name"] = "自动创建直播 " + str(variables["start_time"])
+            body = {"matches_name": variables["matches_name"], "matches_type": "1", "server_sn": variables["auth_code"],
+                    "stream_type": "h1_server", "stream_tem": "aliyun", "start_time": variables["start_time"],
+                    "end_time": variables["end_time"], "streaming_protocol": "rtmp", "is_resolution": 0,
+                    "is_data_analysis": 0, "is_director": 1, "obs_record_enable": 0, "osd_enable": False,
+                    "osd_timer_enable": False, "osd_time": "00:00", "alpha": .85, "jitter_buffer_sec": 0}
+            if variables.get("device_id") not in (None, ""): body["device_id"] = variables["device_id"]
+            result = await scenario_request(client, "POST", base + "/develop/matches", headers, body=body)
+            result.update(name="创建直播", method="POST", path="/develop/matches", association="server_sn ← 创建预约订单.data.auth_code")
+            session["steps"].append(result)
+            if result["status"] != "passed": return scenario_result(session, "failed", message="创建直播失败")
+            session["next_step"] = 2
+        if session["next_step"] == 2:
+            result = await scenario_request(client, "GET", base + "/develop/matches", headers,
+                params={"current": 1, "pageSize": 20, "matches_name": variables["matches_name"]})
+            result.update(name="查询直播列表", method="GET", path="/develop/matches")
+            session["steps"].append(result)
+            session["next_step"] = 3
+            if result["status"] != "passed": return scenario_result(session, "failed", message="查询直播列表失败")
+    SCENARIO_SESSIONS.pop(session["id"], None)
+    return scenario_result(session, "passed", message="创建直播场景执行完成")
+
+
+async def execute_create_recording_scenario(session: dict[str, Any]) -> dict[str, Any]:
+    variables, env = session["variables"], session["environment"]
+    missing = scenario_missing(variables, CREATE_RECORDING_FIELDS)
+    if missing:
+        return scenario_result(session, "needs_input", missing=missing, message="请先填写创建录像必填参数")
+    token = (await ensure_token(session["environment_id"]))["token"]
+    headers = {**env.get("headers", {}), "Authorization": f"Bearer {token}"}
+    base = env["base_url"].rstrip("/")
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        result = await scenario_request(client, "POST", base + "/develop/recordings", headers, body={
+            "recording_name": variables["recording_name"], "viewable_groups": [], "sport_type": "1",
+            "store_id": variables["store_id"], "bitrate": "hd", "data_analysis_enable": 0,
+            "end_time": variables["end_time"], "is_test": 0, "payment_type": "voucher",
+            "start_time": variables["start_time"], "voucher_code": variables["voucher_code"],
+        })
+        result.update(name="创建录像", method="POST", path="/develop/recordings")
+        session["steps"].append(result)
+        if result["status"] != "passed": return scenario_result(session, "failed", message="创建录像失败")
+        variables["recording_id"] = read_json_path(result["json"], "data.id")
+        save_recording_target(session, result["json"])
+        result = await scenario_request(client, "GET", base + "/develop/recordings", headers,
+                                        params={"page_num": 1, "page_size": 20, "type": "video"})
+        result.update(name="查询录像列表", method="GET", path="/develop/recordings?page_num=1&page_size=20&type=video",
+                      association="查询参数固定为 page_num=1、page_size=20、type=video")
+        session["steps"].append(result)
+        if result["status"] != "passed": return scenario_result(session, "failed", message="查询录像列表失败")
+    SCENARIO_SESSIONS.pop(session["id"], None)
+    return scenario_result(session, "passed", message="创建录像场景执行完成")
+
+
+@app.get("/api/scenarios/create-live")
+def create_live_scenario_definition() -> dict[str, Any]:
+    return {"name": "创建直播", "fields": CREATE_LIVE_FIELDS, "steps": [
+        {"name": "创建预约订单", "method": "POST", "path": "/develop/reservation-orders"},
+        {"name": "创建直播", "method": "POST", "path": "/develop/matches", "association": "server_sn ← 创建预约订单.data.auth_code"},
+        {"name": "查询直播列表", "method": "GET", "path": "/develop/matches"},
+    ]}
+
+
+@app.get("/api/scenarios/create-recording")
+def create_recording_scenario_definition() -> dict[str, Any]:
+    return {"name": "创建录像", "fields": CREATE_RECORDING_FIELDS, "steps": [
+        {"name": "创建录像", "method": "POST", "path": "/develop/recordings"},
+        {"name": "查询录像列表", "method": "GET", "path": "/develop/recordings?page_num=1&page_size=20&type=video"},
+    ]}
+
+
+async def scenario_session(environment_id: int, variables: dict[str, Any], allow_write: bool,
+                           fields: list[dict[str, Any]], fixed: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not allow_write: raise HTTPException(403, "请明确确认写入测试环境后再运行场景")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM environments WHERE id=?", (environment_id,)).fetchone()
+    if not row: raise HTTPException(404, "环境不存在")
+    env = decode(row)
+    if not env["base_url"].startswith(("http://", "https://")):
+        raise HTTPException(422, "请先配置当前环境的 Base URL")
+    defaults = {field["name"]: field["default"] for field in fields if "default" in field}
+    session = {"id": uuid.uuid4().hex, "environment_id": environment_id, "environment": env,
+               "variables": {**env.get("variables", {}), **defaults, **variables, **(fixed or {})}, "steps": [], "next_step": 0,
+               "expires_at": int(time.time()) + SCENARIO_TTL_SECONDS}
+    SCENARIO_SESSIONS[session["id"]] = session
+    return session
+
+
+@app.post("/api/scenarios/create-live/run")
+async def run_create_live_scenario(payload: ScenarioRunIn) -> dict[str, Any]:
+    session = await scenario_session(payload.environment_id, payload.variables, payload.allow_write, CREATE_LIVE_FIELDS, {"store_id": 300})
+    return await execute_create_live_scenario(session)
+
+
+@app.post("/api/scenarios/create-recording/run")
+async def run_create_recording_scenario(payload: ScenarioRunIn) -> dict[str, Any]:
+    session = await scenario_session(payload.environment_id, payload.variables, payload.allow_write, CREATE_RECORDING_FIELDS)
+    return await execute_create_recording_scenario(session)
+
+
+def recording_target_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS recording_targets (
+        environment_id INTEGER PRIMARY KEY, version TEXT NOT NULL, base_url TEXT NOT NULL,
+        recording_id INTEGER, name TEXT NOT NULL, status TEXT NOT NULL)""")
+
+
+def save_recording_target(session, response):
+    # Only IDs explicitly returned by this creation are eligible; never use an order ID or list position.
+    recording_id = read_json_path(response, "data.recording_id")
+    if recording_id is None:
+        recording_id = read_json_path(response, "data.id")
+    if isinstance(recording_id, bool) or not str(recording_id).isdigit() or int(recording_id) <= 0:
+        recording_id = None
+    with db() as conn:
+        recording_target_table(conn)
+        conn.execute("INSERT OR REPLACE INTO recording_targets VALUES(?,?,?,?,?,?)", (
+            session["environment_id"], uuid.uuid4().hex, session["environment"]["base_url"],
+            recording_id, str(session["variables"].get("recording_name", "")),
+            "ready" if recording_id else "missing_id"))
+
+
+@app.get("/api/scenarios/cancel-recording")
+def get_recording_target(environment_id: int):
+    with db() as conn:
+        recording_target_table(conn)
+        row = conn.execute("SELECT * FROM recording_targets WHERE environment_id=?", (environment_id,)).fetchone()
+    return dict(row) if row else {"status": "empty"}
+
+
+class CancelRecordingIn(BaseModel):
+    environment_id: int
+    version: str
+    allow_write: bool = False
+
+
+@app.post("/api/scenarios/cancel-recording/run")
+async def cancel_recording_scenario(payload: CancelRecordingIn):
+    if not payload.allow_write:
+        raise HTTPException(403, "请确认取消所显示的录像")
+    with db() as conn:
+        recording_target_table(conn)
+        row = conn.execute("SELECT * FROM recording_targets WHERE environment_id=?", (payload.environment_id,)).fetchone()
+        env_row = conn.execute("SELECT * FROM environments WHERE id=?", (payload.environment_id,)).fetchone()
+    if not row or not env_row:
+        raise HTTPException(409, "请先在当前环境运行创建录像场景")
+    target, env = dict(row), decode(env_row)
+    if target["version"] != payload.version or target["status"] != "ready" or not target["recording_id"]:
+        raise HTTPException(409, "关联录像已变化或不可取消，请重新打开取消录像场景")
+    if target["base_url"] != env["base_url"]:
+        raise HTTPException(409, "环境地址已变化，请在当前地址重新创建录像")
+    token = (await ensure_token(payload.environment_id))["token"]
+    with db() as conn:
+        changed = conn.execute("UPDATE recording_targets SET status='running' WHERE environment_id=? AND version=? AND status='ready'",
+                               (payload.environment_id, payload.version)).rowcount
+    if not changed:
+        raise HTTPException(409, "该录像正在取消或目标已变化")
+    path = f'/develop/recordings/cancel/{target["recording_id"]}'
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        result = await scenario_request(client, "POST", env["base_url"].rstrip("/") + path,
+            {**env.get("headers", {}), "Authorization": f"Bearer {token}"})
+    parsed = result.pop("json", None)
+    if not isinstance(parsed, dict) or parsed.get("code") != 200:
+        result["status"] = "failed"
+    with db() as conn:
+        conn.execute("UPDATE recording_targets SET status=? WHERE environment_id=? AND version=?",
+                     ("cancelled" if result["status"] == "passed" else "check_required", payload.environment_id, payload.version))
+    return {**result, "path": path, "recording_id": target["recording_id"]}
+
+
+@app.post("/api/scenarios/create-live/continue")
+async def continue_create_live_scenario(payload: ScenarioContinueIn) -> dict[str, Any]:
+    if not payload.allow_write: raise HTTPException(403, "请明确确认写入测试环境后再继续场景")
+    session = SCENARIO_SESSIONS.get(payload.session_id)
+    if not session or session["expires_at"] < int(time.time()):
+        SCENARIO_SESSIONS.pop(payload.session_id, None)
+        raise HTTPException(410, "场景已过期，请重新开始")
+    session["variables"].update(payload.variables)
+    session["expires_at"] = int(time.time()) + SCENARIO_TTL_SECONDS
+    return await execute_create_live_scenario(session)
