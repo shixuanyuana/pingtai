@@ -586,6 +586,7 @@ async def execute_create_live_scenario(session: dict[str, Any]) -> dict[str, Any
             session["steps"].append(result)
             if result["status"] != "passed": return scenario_result(session, "failed", message="创建预约订单失败")
             variables["auth_code"] = read_json_path(result["json"], "data.auth_code")
+            variables["created_reservation_id"] = read_json_path(result["json"], "data.reservation_id")
             session["next_step"] = 1
             if not variables["auth_code"]:
                 return scenario_result(session, "needs_input", missing=[{"name": "auth_code", "label": "预约授权码", "required": True,
@@ -603,6 +604,7 @@ async def execute_create_live_scenario(session: dict[str, Any]) -> dict[str, Any
             result.update(name="创建直播", method="POST", path="/develop/matches", association="server_sn ← 创建预约订单.data.auth_code")
             session["steps"].append(result)
             if result["status"] != "passed": return scenario_result(session, "failed", message="创建直播失败")
+            save_live_target(session, read_json_path(result["json"], "data.id"))
             session["next_step"] = 2
         if session["next_step"] == 2:
             result = await scenario_request(client, "GET", base + "/develop/matches", headers,
@@ -720,10 +722,83 @@ def get_recording_target(environment_id: int):
     return dict(row) if row else {"status": "empty"}
 
 
+def live_target_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS live_targets (
+        environment_id INTEGER PRIMARY KEY, version TEXT NOT NULL, base_url TEXT NOT NULL,
+        reservation_id INTEGER, match_id INTEGER, name TEXT NOT NULL, status TEXT NOT NULL)""")
+
+
+def positive_id(value):
+    return int(value) if not isinstance(value, bool) and str(value).isdigit() and int(value) > 0 else None
+
+
+def save_live_target(session, match_id):
+    reservation_id = positive_id(session["variables"].get("created_reservation_id"))
+    match_id = positive_id(match_id)
+    with db() as conn:
+        live_target_table(conn)
+        conn.execute("INSERT OR REPLACE INTO live_targets VALUES(?,?,?,?,?,?,?)", (
+            session["environment_id"], uuid.uuid4().hex, session["environment"]["base_url"],
+            reservation_id, match_id, session["variables"]["matches_name"],
+            "ready" if reservation_id and match_id else "missing_id"))
+
+
+@app.get("/api/scenarios/delete-live")
+def get_live_target(environment_id: int):
+    with db() as conn:
+        live_target_table(conn)
+        row = conn.execute("SELECT * FROM live_targets WHERE environment_id=?", (environment_id,)).fetchone()
+    return dict(row) if row else {"status": "empty"}
+
+
 class CancelRecordingIn(BaseModel):
     environment_id: int
     version: str
     allow_write: bool = False
+
+
+@app.post("/api/scenarios/delete-live/run")
+async def delete_live_scenario(payload: CancelRecordingIn):
+    if not payload.allow_write:
+        raise HTTPException(403, "请确认删除所显示的直播")
+    with db() as conn:
+        live_target_table(conn)
+        row = conn.execute("SELECT * FROM live_targets WHERE environment_id=?", (payload.environment_id,)).fetchone()
+        env_row = conn.execute("SELECT * FROM environments WHERE id=?", (payload.environment_id,)).fetchone()
+    if not row or not env_row:
+        raise HTTPException(409, "请先在当前环境运行创建直播场景")
+    target, env = dict(row), decode(env_row)
+    if target["version"] != payload.version or target["status"] != "ready":
+        raise HTTPException(409, "关联直播不可执行或已变化，请重新打开场景查看")
+    if target["base_url"] != env["base_url"] or not target["reservation_id"] or not target["match_id"]:
+        raise HTTPException(409, "环境地址变化或缺少关联ID，请重新创建直播")
+    token = (await ensure_token(payload.environment_id))["token"]
+    with db() as conn:
+        changed = conn.execute("UPDATE live_targets SET status='running' WHERE environment_id=? AND version=? AND status='ready'",
+                               (payload.environment_id, payload.version)).rowcount
+    if not changed:
+        raise HTTPException(409, "该场景已执行或目标发生变化")
+    headers = {**env.get("headers", {}), "Authorization": f"Bearer {token}"}
+    base = env["base_url"].rstrip("/")
+    steps = []
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        deletion = await scenario_request(client, "DELETE", base + "/develop/reservations", headers,
+                                          body={"ids": [target["reservation_id"]]})
+        parsed = deletion.pop("json", None)
+        deletion["status"] = "passed" if deletion["status"] == "passed" and isinstance(parsed, dict) and parsed.get("code") == 200 else "failed"
+        steps.append({**deletion, "name": "删除预约", "reservation_id": target["reservation_id"]})
+        if deletion["status"] == "passed":
+            ended = await scenario_request(client, "POST", base + f'/develop/matches-end/{target["match_id"]}', headers)
+            parsed = ended.pop("json", None)
+            valid = (isinstance(parsed, dict) and str(read_json_path(parsed, "data.match_id")) == str(target["match_id"])
+                     and read_json_path(parsed, "data.status") == "已结束")
+            ended["status"] = "passed" if ended["status"] == "passed" and valid else "failed"
+            steps.append({**ended, "name": "结束球局", "match_id": target["match_id"]})
+    passed = len(steps) == 2 and all(s["status"] == "passed" for s in steps)
+    with db() as conn:
+        conn.execute("UPDATE live_targets SET status=? WHERE environment_id=? AND version=?",
+                     ("deleted" if passed else "check_required", payload.environment_id, payload.version))
+    return {"status": "passed" if passed else "failed", "steps": steps}
 
 
 @app.post("/api/scenarios/cancel-recording/run")

@@ -36,7 +36,8 @@
     <div class="module">场景编排</div>
     <button id="scenarioNav" class="nav" onclick="showScenarioPage()">创建直播场景</button>
     <button id="recordingScenarioNav" class="nav" onclick="showRecordingScenarioPage()">创建录像场景</button>
-    <button class="nav" onclick="showCancelRecording()">取消录像场景</button>
+    <button class="nav" id="cancelRecordingNav" onclick="showCancelRecording()">取消录像场景</button>
+    <button class="nav" id="deleteLiveNav" onclick="showDeleteLive()">删除直播场景</button>
     <div class="module">▾ 直播管理</div>
     <button class="nav category-nav active" data-group="reservation" data-category="直播预约">直播预约 <span id="count-reservation" class="count">0</span></button>
     <button class="nav category-nav" data-group="match" data-category="直播列表">直播列表 <span id="count-match" class="count">0</span></button>
@@ -125,18 +126,49 @@
     <div class="actions" style="margin-top:18px"><button class="secondary" onclick="saveParameters(false)">仅保存参数</button><button onclick="saveParameters(true)">保存并执行</button></div>
   </div>
 </div>
-<dialog id="cancelRecordingDialog" style="background:#0b1426;color:#e7eefc;border:1px solid #375479;border-radius:15px;width:min(700px,90vw)">
+<section id="cancelRecordingDialog" class="card scenario-only">
   <h2>取消录像场景</h2>
   <p>自动关联当前环境最近一次创建成功的录像。</p>
   <pre id="cancelRecordingTarget" style="max-width:none"></pre>
   <button id="cancelRecordingRun" onclick="runCancelRecording()">取消这条录像</button>
-  <button class="secondary" onclick="$('cancelRecordingDialog').close()">关闭</button>
+  <button class="secondary" onclick="showAccountPage()">关闭</button>
   <pre id="cancelRecordingResult" style="max-width:none;max-height:350px"></pre>
-</dialog>
+</section>
+<section id="deleteLiveDialog" class="card scenario-only">
+  <h2>删除直播场景</h2>
+  <p>关联当前环境最近创建的直播，按顺序删除预约、结束球局。</p>
+  <pre id="deleteLiveTarget" style="max-width:none"></pre>
+  <button id="deleteLiveRun" onclick="runDeleteLive()">删除这场直播</button>
+  <button class="secondary" onclick="showAccountPage()">关闭</button>
+  <pre id="deleteLiveResult" style="max-width:none;max-height:400px"></pre>
+</section>
 <script>
+let deleteLiveTarget=null;
+async function showDeleteLive(){
+  activatePage('deleteLiveDialog','deleteLiveNav');$('deleteLiveRun').disabled=true;
+  $('deleteLiveResult').textContent='';$('deleteLiveTarget').textContent='正在读取关联直播…';
+  try{
+    const environmentId=Number($('environmentId').value);
+    const target=await api('/api/scenarios/delete-live?environment_id='+environmentId);
+    const env=environments.find(e=>e.id===environmentId);
+    deleteLiveTarget={...target,environment_id:environmentId};
+    const messages={empty:'请先运行创建直播场景。',missing_id:'创建响应缺少预约ID或球局ID，无法自动删除。',deleted:'这场直播已处理完成。',running:'正在处理，请勿重复执行。',check_required:'上次执行未全部成功，请核查各步骤结果后处理。'};
+    $('deleteLiveTarget').textContent=`环境：${env?.name||environmentId}\n直播名称：${target.name||'—'}\n预约ID：${target.reservation_id||'—'}\n球局ID：${target.match_id||'—'}\n${target.status==='ready'?'1. DELETE /develop/reservations\n2. POST /develop/matches-end/'+target.match_id:(messages[target.status]||target.status)}`;
+    $('deleteLiveRun').disabled=target.status!=='ready';
+  }catch(e){$('deleteLiveTarget').textContent=e.message}
+}
+async function runDeleteLive(){
+  const target=deleteLiveTarget;if(!target)return;
+  if(!confirm(`确认删除直播“${target.name}”的预约 ${target.reservation_id}，随后结束球局 ${target.match_id}？`))return;
+  $('deleteLiveRun').disabled=true;$('deleteLiveResult').textContent='正在按顺序执行…';
+  try{
+    const result=await api('/api/scenarios/delete-live/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({environment_id:target.environment_id,version:target.version,allow_write:true})});
+    $('deleteLiveResult').textContent=(result.status==='passed'?'删除直播场景完成':'执行未全部成功；后续步骤未执行或未确认成功，请核查')+'\n'+result.steps.map(s=>s.name+' · '+s.status+' · HTTP '+s.http_status+'\n'+(s.response||s.error||'')).join('\n\n');
+  }catch(e){$('deleteLiveResult').textContent=e.message}
+}
 let cancelRecordingTarget=null;
 async function showCancelRecording(){
-  $('cancelRecordingDialog').showModal();$('cancelRecordingRun').disabled=true;
+  activatePage('cancelRecordingDialog','cancelRecordingNav');$('cancelRecordingRun').disabled=true;
   $('cancelRecordingResult').textContent='';$('cancelRecordingTarget').textContent='正在读取关联录像…';
   try{
     const environmentId=Number($('environmentId').value);
@@ -158,18 +190,26 @@ async function runCancelRecording(){
   }catch(e){$('cancelRecordingResult').textContent=e.message}
 }
 const $=id=>document.getElementById(id);let environments=[],allCases=[],allRuns=[],currentGroup='reservation',currentCategory='直播预约',globalToken='',scenarioDefinition=null,scenarioSessionId='',scenarioOpenDefaults=null,recordingScenarioDefinition=null,recordingScenarioOpenDefaults=null;
+function activatePage(cardId,navId){
+  document.querySelectorAll('.account-only,.create-only,.scenario-only').forEach(el=>el.classList.toggle('active',el.id===cardId));
+  document.querySelectorAll('.api-only').forEach(el=>el.classList.toggle('hidden',cardId!==null));
+  document.querySelectorAll('.nav').forEach(el=>el.classList.toggle('active',el.id===navId));
+  document.querySelectorAll('.modal.open').forEach(el=>el.classList.remove('open'));
+  window.scrollTo(0,0);
+}
+document.querySelector('main .grid').append($('cancelRecordingDialog'),$('deleteLiveDialog'));
 const groupCategory={reservation:'直播预约',match:'直播列表',order:'直播订单'};
 function parseJson(id){try{return JSON.parse($(id).value||'{}')}catch{alert(id+' 不是合法 JSON');throw new Error('JSON 格式错误')}}
 async function api(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw new Error(d.detail||'请求失败');return d}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function hideStandalonePages(){$('accountCard').classList.remove('active');$('createCard').classList.remove('active');$('scenarioCard').classList.remove('active');$('recordingScenarioCard').classList.remove('active');$('accountNav').classList.remove('active');$('createNav').classList.remove('active');$('scenarioNav').classList.remove('active');$('recordingScenarioNav').classList.remove('active')}
-function showApiPage(){document.querySelectorAll('.api-only').forEach(x=>x.classList.remove('hidden'));hideStandalonePages()}
-function showAccountPage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('accountNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('createCard').classList.remove('active');$('accountCard').classList.add('active')}
-function showCreatePage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('createNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('accountCard').classList.remove('active');$('createCard').classList.add('active');$('caseCategory').value=currentCategory}
+function showApiPage(){activatePage(null,null)}
+function showAccountPage(){activatePage('accountCard','accountNav')}
+function showCreatePage(){activatePage('createCard','createNav');$('caseCategory').value=currentCategory}
 function scenarioTimes(offsetMinutes=0,durationMinutes=60){const start=new Date(Date.now()+offsetMinutes*60*1000);start.setSeconds(0,0);const end=new Date(start.getTime()+durationMinutes*60*1000);const format=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:00`;return {start_time:format(start),end_time:format(end)}}
-async function showScenarioPage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('scenarioNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('accountCard').classList.remove('active');$('createCard').classList.remove('active');$('scenarioCard').classList.add('active');if(!scenarioSessionId)scenarioOpenDefaults={store_id:300,voucher_code:'VP2026110985535A6DG5ZCFF7FX',matches_name:'',device_id:'',...scenarioTimes()};if(!scenarioDefinition)scenarioDefinition=await api('/api/scenarios/create-live');renderScenario()}
+async function showScenarioPage(){activatePage('scenarioCard','scenarioNav');if(!scenarioSessionId)scenarioOpenDefaults={store_id:300,voucher_code:'VP2026110985535A6DG5ZCFF7FX',matches_name:'',device_id:'',...scenarioTimes()};if(!scenarioDefinition)scenarioDefinition=await api('/api/scenarios/create-live');renderScenario()}
 function renderScenario(fields=scenarioDefinition?.fields||[]){$('scenarioFlow').innerHTML=(scenarioDefinition?.steps||[]).map((s,i)=>`<div class="scenario-step"><b>${i+1}. ${esc(s.name)}</b><span>${esc(s.method)} ${esc(s.path)}</span>${s.association?`<small>${esc(s.association)}</small>`:''}</div>`).join('');const env=environments.find(x=>String(x.id)===$('environmentId').value);const values={...(env?.variables||{}),...scenarioOpenDefaults};$('scenarioFields').innerHTML=fields.map(f=>`<label>${esc(f.label)}${f.required?' *':''}<input data-scenario-variable="${esc(f.name)}" value="${esc(values[f.name]??f.default??'')}" placeholder="${esc(f.hint)}" ${f.readonly?'readonly':''}></label>`).join('')}
-async function showRecordingScenarioPage(){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));$('recordingScenarioNav').classList.add('active');document.querySelectorAll('.api-only').forEach(x=>x.classList.add('hidden'));$('accountCard').classList.remove('active');$('createCard').classList.remove('active');$('scenarioCard').classList.remove('active');$('recordingScenarioCard').classList.add('active');recordingScenarioOpenDefaults={recording_name:'',store_id:30,voucher_code:'VP2026110985535A6DG5ZCFF7FX',...scenarioTimes(30,30)};if(!recordingScenarioDefinition)recordingScenarioDefinition=await api('/api/scenarios/create-recording');renderRecordingScenario()}
+async function showRecordingScenarioPage(){activatePage('recordingScenarioCard','recordingScenarioNav');recordingScenarioOpenDefaults={recording_name:'',store_id:30,voucher_code:'VP2026110985535A6DG5ZCFF7FX',...scenarioTimes(30,30)};if(!recordingScenarioDefinition)recordingScenarioDefinition=await api('/api/scenarios/create-recording');renderRecordingScenario()}
 function renderRecordingScenario(fields=recordingScenarioDefinition?.fields||[]){$('recordingScenarioFlow').innerHTML=(recordingScenarioDefinition?.steps||[]).map((s,i)=>`<div class="scenario-step"><b>${i+1}. ${esc(s.name)}</b><span>${esc(s.method)} ${esc(s.path)}</span></div>`).join('');const env=environments.find(x=>String(x.id)===$('environmentId').value);const values={...(env?.variables||{}),...recordingScenarioOpenDefaults};$('recordingScenarioFields').innerHTML=fields.map(f=>`<label>${esc(f.label)}${f.required?' *':''}<input data-recording-scenario-variable="${esc(f.name)}" value="${esc(values[f.name]??f.default??'')}" placeholder="${esc(f.hint)}"></label>`).join('')}
 function recordingScenarioVariables(){const variables={};document.querySelectorAll('[data-recording-scenario-variable]').forEach(input=>{if(input.value.trim())variables[input.dataset.recordingScenarioVariable]=typedValue(input.value)});return variables}
 function renderRecordingScenarioResult(result){$('recordingScenarioResult').className='scenario-result '+(result.state==='passed'?'ok':result.state==='failed'?'bad':'muted');$('recordingScenarioResult').innerHTML=`<strong>${esc(result.message||'场景已更新')}</strong>${result.steps.map((step,index)=>`<div class="scenario-run"><h3>${index+1}. ${esc(step.name)} · ${esc(step.status)} · HTTP ${step.http_status||'-'}</h3>${step.association?`<div class="muted">${esc(step.association)}</div>`:''}${step.error?`<div class="bad">${esc(step.error)}</div>`:''}<pre>${esc(step.response||'')}</pre></div>`).join('')}`}
