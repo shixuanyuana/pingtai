@@ -38,6 +38,8 @@
     <button id="recordingScenarioNav" class="nav" onclick="showRecordingScenarioPage()">创建录像场景</button>
     <button class="nav" id="cancelRecordingNav" onclick="showCancelRecording()">取消录像场景</button>
     <button class="nav" id="deleteLiveNav" onclick="showDeleteLive()">删除直播场景</button>
+    <button class="nav" id="venueNav" onclick="showVenueScenario()">添加球馆和场地场景</button>
+    <button class="nav" id="deleteVenueNav" onclick="showDeleteVenue()">删除场地和球馆场景</button>
     <div class="module">▾ 直播管理</div>
     <button class="nav category-nav active" data-group="reservation" data-category="直播预约">直播预约 <span id="count-reservation" class="count">0</span></button>
     <button class="nav category-nav" data-group="match" data-category="直播列表">直播列表 <span id="count-match" class="count">0</span></button>
@@ -142,7 +144,86 @@
   <button class="secondary" onclick="showAccountPage()">关闭</button>
   <pre id="deleteLiveResult" style="max-width:none;max-height:400px"></pre>
 </section>
+<section id="venueCard" class="card scenario-only">
+  <h2>添加球馆和场地场景</h2>
+  <p id="venueEnvironment" class="account-note"></p>
+  <p>1. POST /develop/shops → 提取 data.id → 2. POST /develop/stores（shop_id 自动关联）</p>
+  <form id="venueForm" onsubmit="runVenueScenario(event)">
+    <div class="parameter-fields">
+      <label>球馆名称 *<input name="name" required maxlength="255" placeholder="填写新的球馆名称"></label>
+      <label>场地名称 *<input name="stores_name" required maxlength="255" placeholder="填写子场地名称"></label>
+      <label>球馆状态 *<input name="status" required type="number" step="1" value="1"></label>
+      <label>场地状态 *<input name="stores_status" required type="number" step="1" value="1"></label>
+      <label>场地类型 *<input name="stores_type" required value="11"></label>
+    </div>
+    <details><summary>可选参数</summary><div class="parameter-fields">
+      <label>城市/区域 ID（逗号分隔）<input name="city_ids" placeholder="例如 110000,110100,110101；可留空"></label>
+      <label>地址<input name="address"></label><label>联系电话<input name="phone" type="tel"></label>
+      <label>场地业务类型<input name="field_type" value="1"></label>
+    </div></details>
+    <label class="write-check"><input name="confirm_write" type="checkbox" required>确认在所显示的环境创建球馆和子场地</label>
+    <button id="venueRun" type="submit">开始添加球馆和场地</button>
+  </form>
+  <div id="venueResult" class="scenario-result" aria-live="polite">请先填写必填项。</div>
+</section>
+<section id="deleteVenueCard" class="card scenario-only">
+  <h2>删除场地和球馆场景</h2>
+  <p>关联当前环境最近一次添加的球馆和子场地。先删除场地，成功后再删除球馆。</p>
+  <pre id="deleteVenueTarget" style="max-width:none"></pre>
+  <button id="deleteVenueRun" onclick="runDeleteVenue()" disabled>删除关联场地和球馆</button>
+  <pre id="deleteVenueResult" style="max-width:none;max-height:450px" aria-live="polite"></pre>
+</section>
 <script>
+let deleteVenueTarget=null;
+async function showDeleteVenue(){
+  activatePage('deleteVenueCard','deleteVenueNav');deleteVenueTarget=null;
+  $('deleteVenueRun').disabled=true;$('deleteVenueResult').textContent='';
+  $('deleteVenueTarget').textContent='读取关联数据…';
+  const environmentId=Number($('environmentId').value);
+  try{
+    const target=await api('/api/scenarios/delete-venue?environment_id='+environmentId);
+    const env=environments.find(e=>e.id===environmentId);
+    deleteVenueTarget={...target,environment_id:environmentId};
+    const notes={empty:'请先运行添加球馆和场地场景。',incomplete:'添加场景未完整成功，无法自动删除，请核查创建结果。',deleted:'场地和球馆已经删除。',running:'删除正在执行。',check_required:'上次执行未全部确认成功，请核查结果后处理。'};
+    const ready=target.status==='ready'&&target.base_url===env?.base_url;
+    $('deleteVenueTarget').textContent=`环境：${env?.name||environmentId}\n地址：${env?.base_url||''}\n球馆：${target.shop_name||'—'}（ID ${target.shop_id||'—'}）\n场地：${target.store_name||'—'}（ID ${target.store_id||'—'}）\n${ready?'无需手动填写ID，点击按钮按顺序执行删除。':notes[target.status]||'环境地址已变化，请重新添加。'}`;
+    $('deleteVenueRun').disabled=!ready;
+  }catch(e){$('deleteVenueTarget').textContent=e.message}
+}
+async function runDeleteVenue(){
+  const target=deleteVenueTarget;if(!target||$('deleteVenueRun').disabled)return;
+  $('deleteVenueRun').disabled=true;$('deleteVenueResult').textContent='正在删除场地，成功后将删除球馆…';
+  try{
+    const result=await api('/api/scenarios/delete-venue/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({environment_id:target.environment_id,version:target.version})});
+    $('deleteVenueResult').textContent=(result.status==='passed'?'场地和球馆已删除':'未全部删除成功，请核查以下步骤。')+'\n'+result.steps.map(s=>s.name+' · '+s.status+' · HTTP '+s.http_status+'\n'+s.path+' ids='+JSON.stringify(s.ids)+'\n'+(s.response||s.error||'')).join('\n\n');
+  }catch(e){$('deleteVenueResult').textContent=e.message}
+}
+let venueEnvironmentId=null;
+function showVenueScenario(){
+  activatePage('venueCard','venueNav');
+  venueEnvironmentId=Number($('environmentId').value);
+  const env=environments.find(e=>e.id===venueEnvironmentId);
+  $('venueEnvironment').textContent=`当前环境：${env?.name||'未选择'} · ${env?.base_url||'地址未配置'}`;
+  $('venueForm').elements.confirm_write.checked=false;
+}
+async function runVenueScenario(event){
+  event.preventDefault();const form=$('venueForm');
+  if(!form.reportValidity()||$('venueRun').disabled)return;
+  const values=Object.fromEntries(new FormData(form));
+  const cities=values.city_ids.trim()?values.city_ids.split(/[,，]/).map(s=>s.trim()):[];
+  if(cities.some(s=>!/^\d+$/.test(s))){alert('城市ID请填写数字并用逗号分隔');return}
+  $('venueRun').disabled=true;$('venueResult').textContent='正在创建球馆，成功后自动创建子场地…';
+  try{
+    const result=await api('/api/scenarios/create-venue/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      environment_id:venueEnvironmentId,allow_write:true,name:values.name,stores_name:values.stores_name,
+      status:Number(values.status),stores_status:Number(values.stores_status),stores_type:values.stores_type,
+      field_type:values.field_type,address:values.address,phone:values.phone,city_id:cities.map(Number)
+    })});
+    $('venueResult').innerHTML=`<strong>${esc(result.message)}</strong><p>球馆 ID：${esc(result.shop_id||'—')} · 场地 ID：${esc(result.store_id||'—')}</p>`+
+      result.steps.map(s=>`<div class="scenario-run"><h3>${esc(s.name)} · ${esc(s.status)} · HTTP ${s.http_status}</h3><div>${esc(s.association||'')}</div><pre>${esc(s.response||s.error||'')}</pre></div>`).join('');
+  }catch(e){$('venueResult').textContent='请求未完成，请先核查是否已创建球馆，再决定是否重试。'+e.message}
+  finally{$('venueRun').disabled=false;form.elements.confirm_write.checked=false}
+}
 let deleteLiveTarget=null;
 async function showDeleteLive(){
   activatePage('deleteLiveDialog','deleteLiveNav');$('deleteLiveRun').disabled=true;
@@ -198,6 +279,8 @@ function activatePage(cardId,navId){
   window.scrollTo(0,0);
 }
 document.querySelector('main .grid').append($('cancelRecordingDialog'),$('deleteLiveDialog'));
+document.querySelector('main .grid').append($('venueCard'));
+document.querySelector('main .grid').append($('deleteVenueCard'));
 const groupCategory={reservation:'直播预约',match:'直播列表',order:'直播订单'};
 function parseJson(id){try{return JSON.parse($(id).value||'{}')}catch{alert(id+' 不是合法 JSON');throw new Error('JSON 格式错误')}}
 async function api(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw new Error(d.detail||'请求失败');return d}

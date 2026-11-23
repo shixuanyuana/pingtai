@@ -111,6 +111,134 @@ class CaseIn(BaseModel):
     assertions: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class VenueScenarioIn(BaseModel):
+    environment_id: int
+    allow_write: bool = False
+    name: str = Field(min_length=1, max_length=255)
+    stores_name: str = Field(min_length=1, max_length=255)
+    status: int = 1
+    stores_status: int = 1
+    stores_type: str = Field(default="11", min_length=1)
+    field_type: str = "1"
+    city_id: list[int] = Field(default_factory=list)
+    address: str = ""
+    phone: str = ""
+
+
+@app.post("/api/scenarios/create-venue/run")
+async def create_venue_scenario(payload: VenueScenarioIn):
+    if not payload.allow_write:
+        raise HTTPException(403, "请确认在当前环境添加球馆和场地")
+    if not payload.name.strip() or not payload.stores_name.strip() or not payload.stores_type.strip():
+        raise HTTPException(422, "球馆名称、场地名称和场地类型不能为空")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM environments WHERE id=?", (payload.environment_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "环境不存在")
+    env = decode(row)
+    if not env["base_url"].startswith(("https://", "http://")):
+        raise HTTPException(422, "请配置当前环境地址")
+    token = (await ensure_token(payload.environment_id))["token"]
+    headers = {**env.get("headers", {}), "Authorization": f"Bearer {token}"}
+    base = env["base_url"].rstrip("/")
+    steps = []
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        shop = await scenario_request(client, "POST", base + "/develop/shops", headers, body={
+            "name": payload.name.strip(), "status": str(payload.status), "city_id": payload.city_id,
+            "address": payload.address, "phone": payload.phone, "banner_url": "",
+            "video_info": {"src": "", "poster": ""}, "groups_ids": [],
+        })
+        data = shop.pop("json", None)
+        shop_id = positive_id(read_json_path(data, "data.id"))
+        ok = shop["status"] == "passed" and isinstance(data, dict) and data.get("code") == 200 and shop_id is not None
+        shop.update(name="添加球馆", status="passed" if ok else "failed")
+        steps.append(shop)
+        if not ok:
+            return {"status": "failed", "steps": steps, "message": "球馆创建失败或未返回有效ID，场地步骤未执行"}
+        target_version = uuid.uuid4().hex
+        with db() as conn:
+            venue_target_table(conn)
+            conn.execute("INSERT OR REPLACE INTO venue_targets VALUES(?,?,?,?,?,?,?,?)", (
+                payload.environment_id, target_version, env["base_url"], shop_id, None,
+                payload.name, payload.stores_name, "incomplete"))
+        store = await scenario_request(client, "POST", base + "/develop/stores", headers, body={
+            "shop_id": shop_id, "stores_name": payload.stores_name.strip(), "stores_type": payload.stores_type,
+            "field_type": payload.field_type, "stores_status": str(payload.stores_status),
+            "mini_scan_visible": "no", "public_live": "no", "public_recording": "no", "time_slots": [],
+            "scan_service_prices": {"recordings": {"uhd": 0, "data_analysis_enable": 0},
+                "reservation_orders": {"auto_device_config": 0, "auto_server_config": 0,
+                    "is_resolution": 0, "is_multiple": 0, "is_data_analysis": 0, "obs_record_enable": 0}},
+            "live_config": {"stream_type": "h1_server", "streaming_protocol": "rtmp", "stream_tem": "aliyun", "al_delay_time": 0},
+        })
+        data = store.pop("json", None)
+        store_id = positive_id(read_json_path(data, "data.id"))
+        ok = (store["status"] == "passed" and isinstance(data, dict) and data.get("code") == 200
+              and store_id is not None and positive_id(read_json_path(data, "data.shop_id")) == shop_id)
+        store.update(name="添加子场地", status="passed" if ok else "failed", association=f"shop_id ← 球馆响应.data.id = {shop_id}")
+        steps.append(store)
+        with db() as conn:
+            conn.execute("UPDATE venue_targets SET store_id=?,status=? WHERE environment_id=? AND version=?",
+                         (store_id, "ready" if ok else "incomplete", payload.environment_id, target_version))
+    return {"status": "passed" if ok else "failed", "shop_id": shop_id, "store_id": store_id, "steps": steps,
+            "message": "球馆和子场地创建完成" if ok else f"球馆 {shop_id} 已创建，场地未确认成功；请核查响应，避免重复创建球馆"}
+
+
+def venue_target_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS venue_targets (
+        environment_id INTEGER PRIMARY KEY, version TEXT NOT NULL, base_url TEXT NOT NULL,
+        shop_id INTEGER, store_id INTEGER, shop_name TEXT NOT NULL, store_name TEXT NOT NULL, status TEXT NOT NULL)""")
+
+
+@app.get("/api/scenarios/delete-venue")
+def get_venue_target(environment_id: int):
+    with db() as conn:
+        venue_target_table(conn)
+        row = conn.execute("SELECT * FROM venue_targets WHERE environment_id=?", (environment_id,)).fetchone()
+    return dict(row) if row else {"status": "empty"}
+
+
+class DeleteVenueIn(BaseModel):
+    environment_id: int
+    version: str
+
+
+@app.post("/api/scenarios/delete-venue/run")
+async def delete_venue_scenario(payload: DeleteVenueIn):
+    with db() as conn:
+        venue_target_table(conn)
+        row = conn.execute("SELECT * FROM venue_targets WHERE environment_id=?", (payload.environment_id,)).fetchone()
+        env_row = conn.execute("SELECT * FROM environments WHERE id=?", (payload.environment_id,)).fetchone()
+    if not row or not env_row:
+        raise HTTPException(409, "请先运行添加球馆和场地场景")
+    target, env = dict(row), decode(env_row)
+    if (target["version"] != payload.version or target["status"] != "ready"
+            or not target["store_id"] or not target["shop_id"] or target["base_url"] != env["base_url"]):
+        raise HTTPException(409, "关联数据不完整、已执行或环境发生变化，请重新查看场景")
+    token = (await ensure_token(payload.environment_id))["token"]
+    with db() as conn:
+        changed = conn.execute("UPDATE venue_targets SET status='running' WHERE environment_id=? AND version=? AND status='ready'",
+                               (payload.environment_id, payload.version)).rowcount
+    if not changed:
+        raise HTTPException(409, "该场景正在执行或关联数据已变化")
+    steps = []
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        for name, path, target_id in [("删除场地", "/develop/stores", target["store_id"]),
+                                      ("删除球馆", "/develop/shops", target["shop_id"])]:
+            result = await scenario_request(client, "DELETE", env["base_url"].rstrip("/") + path,
+                {**env.get("headers", {}), "Authorization": f"Bearer {token}"}, body={"ids": [target_id]})
+            content = result.pop("json", None)
+            ok = result["status"] == "passed" and isinstance(content, dict) and content.get("code") == 200
+            result.update(name=name, path=path, ids=[target_id], status="passed" if ok else "failed")
+            steps.append(result)
+            if not ok:
+                break
+    passed = len(steps) == 2 and all(s["status"] == "passed" for s in steps)
+    with db() as conn:
+        conn.execute("UPDATE venue_targets SET status=? WHERE environment_id=? AND version=?",
+                     ("deleted" if passed else "check_required", payload.environment_id, payload.version))
+    return {"status": "passed" if passed else "failed", "steps": steps}
+
+
 class ScenarioRunIn(BaseModel):
     environment_id: int
     variables: dict[str, Any] = Field(default_factory=dict)
