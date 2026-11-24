@@ -815,6 +815,10 @@ async def run_create_live_scenario(payload: ScenarioRunIn) -> dict[str, Any]:
     return await execute_create_live_scenario(session)
 
 
+from app.device_scenario import register as register_device_scenario
+register_device_scenario(app, db, decode, TOKEN_STORE, resolve_value, resolve_text, ensure_token, get_venue_target)
+
+
 @app.post("/api/scenarios/create-recording/run")
 async def run_create_recording_scenario(payload: ScenarioRunIn) -> dict[str, Any]:
     session = await scenario_session(payload.environment_id, payload.variables, payload.allow_write, CREATE_RECORDING_FIELDS)

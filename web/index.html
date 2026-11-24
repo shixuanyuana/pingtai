@@ -40,6 +40,8 @@
     <button class="nav" id="deleteLiveNav" onclick="showDeleteLive()">删除直播场景</button>
     <button class="nav" id="venueNav" onclick="showVenueScenario()">添加球馆和场地场景</button>
     <button class="nav" id="deleteVenueNav" onclick="showDeleteVenue()">删除场地和球馆场景</button>
+    <button class="nav" id="deviceCreateNav" onclick="showDeviceCreate()">创建设备并关联场地</button>
+    <button class="nav" id="deviceDeleteNav" onclick="showDeviceDelete()">删除本次设备场景</button>
     <div class="module">▾ 直播管理</div>
     <button class="nav category-nav active" data-group="reservation" data-category="直播预约">直播预约 <span id="count-reservation" class="count">0</span></button>
     <button class="nav category-nav" data-group="match" data-category="直播列表">直播列表 <span id="count-match" class="count">0</span></button>
@@ -173,7 +175,63 @@
   <button id="deleteVenueRun" onclick="runDeleteVenue()" disabled>删除关联场地和球馆</button>
   <pre id="deleteVenueResult" style="max-width:none;max-height:450px" aria-live="polite"></pre>
 </section>
+<section id="deviceCreateCard" class="card scenario-only">
+  <h2>创建设备并关联场地</h2>
+  <pre id="deviceVenueTarget" style="max-width:none"></pre>
+  <p class="account-note">自动使用当前环境最近创建成功的球馆和场地。创建时提交 shop_id 和 store_id 完成关联；设备 ID 从创建响应读取。</p>
+  <label>设备名称<input id="deviceName" placeholder="填写设备名称" maxlength="255"></label>
+  <label>设备编号<input id="deviceSn" placeholder="填写本次测试设备的唯一编号" maxlength="255"></label>
+  <label>阿里云设备<select id="deviceAliyun"><option value="false">否</option><option value="true">是</option></select></label>
+  <button id="deviceCreateRun" disabled onclick="createLinkedDevice()">创建设备并关联</button>
+  <pre id="deviceCreateResult" style="max-width:none;max-height:450px"></pre>
+</section>
+<section id="deviceDeleteCard" class="card scenario-only">
+  <h2>删除本次设备场景</h2>
+  <p>选择设备创建记录，自动删除该记录返回的设备 ID。</p>
+  <label>当前环境设备记录<select id="deviceDeleteRecords"></select></label>
+  <button id="deviceDeleteRun" disabled onclick="deleteCreatedDevice()">删除该次创建的设备</button>
+  <pre id="deviceDeleteResult" style="max-width:none;max-height:450px"></pre>
+</section>
 <script>
+let deviceVenueTarget=null, deviceDeleteEnvironment=null;
+async function showDeviceCreate(){
+  activatePage('deviceCreateCard','deviceCreateNav');deviceVenueTarget=null;$('deviceCreateRun').disabled=true;
+  const environmentId=Number($('environmentId').value),env=environments.find(e=>e.id===environmentId);
+  try{
+    const context=await api('/api/scenarios/create-device?environment_id='+environmentId),target=context.target;
+    if(!context.ready)throw new Error('请先在当前环境成功创建球馆和场地');
+    deviceVenueTarget={...target,environment_id:environmentId};
+    $('deviceVenueTarget').textContent=`环境：${env.name} · ${env.base_url}\n球馆：${target.shop_name}（${target.shop_id}）\n场地：${target.store_name}（${target.store_id}）`;
+    $('deviceCreateRun').disabled=false;
+  }catch(e){$('deviceVenueTarget').textContent=e.message}
+}
+async function createLinkedDevice(){
+  const target=deviceVenueTarget;if(!target||$('deviceCreateRun').disabled)return;
+  const body={environment_id:target.environment_id,venue_version:target.version,device_name:$('deviceName').value.trim(),device_sn:$('deviceSn').value.trim(),is_aliyun:$('deviceAliyun').value==='true',allow_write:true};
+  if(!body.device_name||!body.device_sn){alert('请填写设备名称和编号');return}
+  if(!confirm(`确认在 ${target.base_url} 创建设备并关联到场地 ${target.store_name}（${target.store_id}）？`))return;
+  $('deviceCreateRun').disabled=true;
+  try{const result=await api('/api/scenarios/create-device/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('deviceCreateResult').textContent=(result.status==='ready'?'设备已创建并提交场地关联，可进入删除设备场景。\n':'创建未确认成功，请检查结果。\n')+JSON.stringify(result,null,2)}
+  catch(e){$('deviceCreateResult').textContent=e.message}
+  finally{$('deviceCreateRun').disabled=false}
+}
+async function showDeviceDelete(){
+  activatePage('deviceDeleteCard','deviceDeleteNav');$('deviceDeleteRun').disabled=true;$('deviceDeleteRecords').replaceChildren();
+  deviceDeleteEnvironment=Number($('environmentId').value);
+  try{const reports=await api('/api/scenarios/delete-device?environment_id='+deviceDeleteEnvironment);
+    const env=environments.find(e=>e.id===deviceDeleteEnvironment);
+    const ready=reports.filter(r=>r.can_delete);
+    $('deviceDeleteRecords').replaceChildren(...ready.map(r=>new Option(`${r.device_name} · 设备 ${r.device_id} · 球馆 ${r.shop_id} / 场地 ${r.store_id}`,r.run_id)));
+    $('deviceDeleteRun').disabled=!ready.length;$('deviceDeleteResult').textContent=(ready.length?'ID 来自创建响应，请选择要删除的记录。':'没有待删除的本次设备记录')+'\n'+JSON.stringify(reports,null,2);
+  }catch(e){$('deviceDeleteResult').textContent=e.message}
+}
+async function deleteCreatedDevice(){
+  if($('deviceDeleteRun').disabled)return;
+  const choice=$('deviceDeleteRecords').selectedOptions[0];if(!choice||!confirm('确认删除 '+choice.text+'？'))return;
+  $('deviceDeleteRun').disabled=true;
+  try{const result=await api('/api/scenarios/delete-device/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({environment_id:deviceDeleteEnvironment,run_id:choice.value,allow_write:true})});$('deviceDeleteResult').textContent=JSON.stringify(result,null,2)}
+  catch(e){$('deviceDeleteResult').textContent=e.message}
+}
 let deleteVenueTarget=null;
 async function showDeleteVenue(){
   activatePage('deleteVenueCard','deleteVenueNav');deleteVenueTarget=null;
@@ -281,6 +339,7 @@ function activatePage(cardId,navId){
 document.querySelector('main .grid').append($('cancelRecordingDialog'),$('deleteLiveDialog'));
 document.querySelector('main .grid').append($('venueCard'));
 document.querySelector('main .grid').append($('deleteVenueCard'));
+document.querySelector('main .grid').append($('deviceCreateCard'),$('deviceDeleteCard'));
 const groupCategory={reservation:'直播预约',match:'直播列表',order:'直播订单'};
 function parseJson(id){try{return JSON.parse($(id).value||'{}')}catch{alert(id+' 不是合法 JSON');throw new Error('JSON 格式错误')}}
 async function api(url,options){const r=await fetch(url,options);const d=await r.json();if(!r.ok)throw new Error(d.detail||'请求失败');return d}
